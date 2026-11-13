@@ -1,0 +1,45 @@
+name: Mirror language packs
+
+# Runs when the release named in RELEASE changes, or by hand. A second run for the same release uploads only
+# what is missing.
+on:
+  push:
+    branches: [main]
+    paths: [RELEASE, mirror.py, .github/workflows/mirror.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The release
+        id: release
+        run: echo "tag=$(tr -d '[:space:]' < RELEASE)" >> "$GITHUB_OUTPUT"
+
+      - name: Create it when it is new
+        run: |
+          tag="${{ steps.release.outputs.tag }}"
+          gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --title "Language packs ($tag)" \
+            --notes "Translation models from Mozilla's Firefox Translations (MPL 2.0), unchanged. packs.json lists every file with its size and SHA-256."
+          gh release view "$tag" --json assets --jq '.assets[].name' > already.txt
+
+      - name: Download and verify
+        run: python3 mirror.py --tag "${{ steps.release.outputs.tag }}" --out build --skip already.txt
+
+      - name: Upload
+        run: |
+          tag="${{ steps.release.outputs.tag }}"
+          find build -type f ! -name packs.json -print0 | xargs -0 -r -n 20 gh release upload "$tag"
+          gh release upload "$tag" build/packs.json --clobber
