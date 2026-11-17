@@ -12,12 +12,16 @@ no email content anywhere.
 - `mirror.py` builds a release: it reads Mozilla's published list, takes the newest released model of each direction,
   downloads its files, checks each against the SHA-256 Mozilla publishes and writes `packs.json`.
 - `.github/workflows/mirror.yml` runs it and uploads the files. It runs when `RELEASE` changes.
+- `test_mirror.py` tests the choice of packs and the handling of a release that already has its list
+  (`python3 -m unittest test_mirror`); the workflow runs it first.
 
 ## A new set of packs
 
 Change the name in `RELEASE` (for example to `packs-2`) and push. The workflow creates the release and fills it. Then
-copy that release's `packs.json` into PP Mail, which is what makes the app offer the new set. An existing release is
-never changed, so an installed app always finds the files its list names.
+copy that release's `packs.json` into PP Mail, which is what makes the app offer the new set. A release that has its
+`packs.json` keeps it for good: a later run for the same name uploads only files that list names and the release
+lacks, each found at Mozilla by its SHA-256, and stops if Mozilla no longer publishes one. So an installed app always
+finds the files its list names, with the hashes it expects.
 
 ## Where the models come from
 
