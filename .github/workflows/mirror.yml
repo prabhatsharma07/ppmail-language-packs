@@ -1,7 +1,7 @@
 name: Mirror language packs
 
-# Runs when the release named in RELEASE changes, or by hand. A second run for the same release uploads only
-# what is missing.
+# Runs when the release named in RELEASE changes, or by hand. A second run for the same release uploads only the
+# files its own packs.json names and lacks; a packs.json that is published is never replaced.
 on:
   push:
     branches: [main]
@@ -22,7 +22,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Test the script
+        run: python3 -B -m unittest -q test_mirror
 
       - name: The release
         id: release
@@ -34,12 +37,33 @@ jobs:
           gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --title "Language packs ($tag)" \
             --notes "Translation models from Mozilla's Firefox Translations (MPL 2.0), unchanged. packs.json lists every file with its size and SHA-256."
           gh release view "$tag" --json assets --jq '.assets[].name' > already.txt
+          if grep -qx packs.json already.txt; then gh release download "$tag" --pattern packs.json --dir published; fi
 
       - name: Download and verify
-        run: python3 mirror.py --tag "${{ steps.release.outputs.tag }}" --out build --skip already.txt
+        run: |
+          python3 mirror.py --tag "${{ steps.release.outputs.tag }}" --out build --skip already.txt \
+            --published published/packs.json
 
+      # PP Mail takes a list only with this signature on its exact bytes. A release published before signing
+      # began gets a signature of the list it already has; that list itself is never touched.
+      - name: Sign the list
+        env:
+          PACKS_SIGNING_KEY: ${{ secrets.PACKS_SIGNING_KEY }}
+        run: |
+          if [ -z "$PACKS_SIGNING_KEY" ]; then echo "The secret PACKS_SIGNING_KEY is not set." >&2; exit 1; fi
+          list=build/packs.json
+          if [ -f published/packs.json ]; then list=published/packs.json; fi
+          key="$RUNNER_TEMP/packs-signing-key.pem"
+          ( umask 077; printf '%s\n' "$PACKS_SIGNING_KEY" > "$key" )
+          openssl pkeyutl -sign -inkey "$key" -rawin -in "$list" -out packs.json.sig
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/packs-signing-public.pem"
+          rm "$key"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/packs-signing-public.pem" -rawin -in "$list" -sigfile packs.json.sig
+
+      # The list goes up last and once: with it the release is complete, and installed apps check files against it.
       - name: Upload
         run: |
           tag="${{ steps.release.outputs.tag }}"
           find build -type f ! -name packs.json -print0 | xargs -0 -r -n 20 gh release upload "$tag"
-          gh release upload "$tag" build/packs.json --clobber
+          if ! grep -qx packs.json.sig already.txt; then gh release upload "$tag" packs.json.sig; fi
+          if [ -f build/packs.json ]; then gh release upload "$tag" build/packs.json; fi

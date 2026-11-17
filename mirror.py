@@ -3,8 +3,11 @@
 
     python3 mirror.py --tag packs-1 --out build          # download, verify, write build/packs.json
     python3 mirror.py --tag packs-1 --list-only          # print the list without downloading
+    python3 mirror.py --tag packs-1 --out build --published packs.json --skip already.txt
+                                                         # fill in what a release's own list names and lacks
 
 Each file is checked against the SHA-256 Mozilla publishes for it; a file that does not match stops the run.
+A release that has its packs.json is never given another one: that list is what installed apps check files against.
 """
 import argparse
 import hashlib
@@ -87,6 +90,28 @@ def manifest(packs, tag):
     }
 
 
+def downloads(packs):
+    """What a new release holds: (asset name, Mozilla's location, SHA-256) for every file of every pack."""
+    return [
+        (asset_name(pack, record), record["attachment"]["location"], record["attachment"]["hash"])
+        for pack in packs
+        for record in pack["records"]
+    ]
+
+
+def published_downloads(published, records):
+    """The files a release's own list names, each found among Mozilla's records by its SHA-256.
+
+    Mozilla keeps a file's name when it replaces a model, so the hash is the only thing that says which one it is.
+    """
+    location_by_hash = {record["attachment"]["hash"]: record["attachment"]["location"] for record in records}
+    files = [file for pack in published["packs"] for file in pack["files"]]
+    gone = [file["name"] for file in files if file["sha256"] not in location_by_hash]
+    if gone:
+        raise ValueError("Mozilla no longer publishes these files of the release: " + ", ".join(gone))
+    return [(file["name"], location_by_hash[file["sha256"]], file["sha256"]) for file in files]
+
+
 def read_json(url):
     with urllib.request.urlopen(url, timeout=60) as response:
         return json.load(response)
@@ -109,27 +134,30 @@ def main():
     parser.add_argument("--out", type=pathlib.Path, default=pathlib.Path("build"), help="directory for the files")
     parser.add_argument("--list-only", action="store_true", help="write packs.json without downloading")
     parser.add_argument("--skip", type=pathlib.Path, help="file with the names already in the release, one a line")
+    parser.add_argument("--published", type=pathlib.Path, help="the packs.json the release already has")
     args = parser.parse_args()
 
-    packs = select_packs(read_json(RECORDS)["data"])
-    names = [asset_name(pack, record) for pack in packs for record in pack["records"]]
+    records = read_json(RECORDS)["data"]
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "packs.json").write_text(json.dumps(manifest(packs, args.tag), indent=1) + "\n")
-    total = sum(record["attachment"]["size"] for pack in packs for record in pack["records"])
-    print(f"{len(packs)} packs, {len(names)} files, {total / 1e9:.2f} GB")
+    if args.published and args.published.exists():
+        wanted = published_downloads(json.loads(args.published.read_text()), records)
+        print(f"{args.tag} has its list: {len(wanted)} files, none of them replaced")
+    else:
+        packs = select_packs(records)
+        wanted = downloads(packs)
+        (args.out / "packs.json").write_text(json.dumps(manifest(packs, args.tag), indent=1) + "\n")
+        total = sum(record["attachment"]["size"] for pack in packs for record in pack["records"])
+        print(f"{len(packs)} packs, {len(wanted)} files, {total / 1e9:.2f} GB")
     if args.list_only:
         return
 
     already = set(args.skip.read_text().split()) if args.skip and args.skip.exists() else set()
     base_url = read_json(SERVER)["capabilities"]["attachments"]["base_url"]
-    for pack in packs:
-        for record in pack["records"]:
-            attachment = record["attachment"]
-            name = asset_name(pack, record)
-            if name in already:
-                continue
-            download(base_url + attachment["location"], args.out / name, attachment["hash"])
-            print(f"{name}  {attachment['size'] / 1e6:.1f} MB  SHA-256 ok", flush=True)
+    for name, location, sha256 in wanted:
+        if name in already:
+            continue
+        download(base_url + location, args.out / name, sha256)
+        print(f"{name}  SHA-256 ok", flush=True)
 
 
 if __name__ == "__main__":
