@@ -44,9 +44,26 @@ jobs:
           python3 mirror.py --tag "${{ steps.release.outputs.tag }}" --out build --skip already.txt \
             --published published/packs.json
 
+      # PP Mail takes a list only with this signature on its exact bytes. A release published before signing
+      # began gets a signature of the list it already has; that list itself is never touched.
+      - name: Sign the list
+        env:
+          PACKS_SIGNING_KEY: ${{ secrets.PACKS_SIGNING_KEY }}
+        run: |
+          if [ -z "$PACKS_SIGNING_KEY" ]; then echo "The secret PACKS_SIGNING_KEY is not set." >&2; exit 1; fi
+          list=build/packs.json
+          if [ -f published/packs.json ]; then list=published/packs.json; fi
+          key="$RUNNER_TEMP/packs-signing-key.pem"
+          ( umask 077; printf '%s\n' "$PACKS_SIGNING_KEY" > "$key" )
+          openssl pkeyutl -sign -inkey "$key" -rawin -in "$list" -out packs.json.sig
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/packs-signing-public.pem"
+          rm "$key"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/packs-signing-public.pem" -rawin -in "$list" -sigfile packs.json.sig
+
       # The list goes up last and once: with it the release is complete, and installed apps check files against it.
       - name: Upload
         run: |
           tag="${{ steps.release.outputs.tag }}"
           find build -type f ! -name packs.json -print0 | xargs -0 -r -n 20 gh release upload "$tag"
+          if ! grep -qx packs.json.sig already.txt; then gh release upload "$tag" packs.json.sig; fi
           if [ -f build/packs.json ]; then gh release upload "$tag" build/packs.json; fi

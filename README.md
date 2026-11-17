@@ -12,6 +12,10 @@ no email content anywhere.
 - `mirror.py` builds a release: it reads Mozilla's published list, takes the newest released model of each direction,
   downloads its files, checks each against the SHA-256 Mozilla publishes and writes `packs.json`.
 - `.github/workflows/mirror.yml` runs it and uploads the files. It runs when `RELEASE` changes.
+- Each release also has `packs.json.sig`, an Ed25519 signature over the exact bytes of `packs.json`, made by the
+  workflow with the repository secret `PACKS_SIGNING_KEY`. PP Mail takes a newer list only when this signature
+  verifies against the public key compiled into the app, so control of this repository alone cannot make the app
+  accept a model.
 - `test_mirror.py` tests the choice of packs and the handling of a release that already has its list
   (`python3 -m unittest test_mirror`); the workflow runs it first.
 
